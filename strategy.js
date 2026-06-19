@@ -1,4 +1,4 @@
-// ── STRATEGY-02: RSI + MACD + Support/Resistance ─────
+// ── STRATEGY-02: RSI + MACD + SR + Volume + HTF Filter ──
 
 // ── Binance API Helpers ───────────────────────────────
 
@@ -6,7 +6,14 @@ async function getTopCoins(limit = CONFIG.TOP_COINS_COUNT) {
   const res = await fetch(`${CONFIG.BINANCE_API}/ticker/24hr`);
   const tickers = await res.json();
   return tickers
-    .filter(t => t.symbol.endsWith('USDT') && !t.symbol.includes('DOWN') && !t.symbol.includes('UP') && !t.symbol.includes('BEAR') && !t.symbol.includes('BULL'))
+    .filter(t =>
+      t.symbol.endsWith('USDT') &&
+      !t.symbol.includes('DOWN') &&
+      !t.symbol.includes('UP') &&
+      !t.symbol.includes('BEAR') &&
+      !t.symbol.includes('BULL') &&
+      parseFloat(t.quoteVolume) > 1000000 // min $1M daily volume
+    )
     .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
     .slice(0, limit)
     .map(t => t.symbol);
@@ -16,6 +23,7 @@ async function getCandles(symbol, interval, limit = CONFIG.CANDLE_LIMIT) {
   const url = `${CONFIG.BINANCE_API}/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
   const res = await fetch(url);
   const raw = await res.json();
+  if (!Array.isArray(raw)) return [];
   return raw.map(c => ({
     time:   c[0],
     open:   parseFloat(c[1]),
@@ -32,6 +40,59 @@ async function getCurrentPrice(symbol) {
     const data = await res.json();
     return parseFloat(data.price);
   } catch { return null; }
+}
+
+// ── MODULE: Volume Analysis ───────────────────────────
+
+function getVolumeSignal(candles) {
+  if (candles.length < 20) return { volumeOk: false, volumeRatio: 0 };
+
+  const recent = candles.slice(-20);
+  const avgVol = recent.slice(0, 19).reduce((s, c) => s + c.volume, 0) / 19;
+  const lastVol = recent[recent.length - 1].volume;
+  const ratio = lastVol / avgVol;
+
+  return {
+    volumeOk:    ratio >= CONFIG.VOLUME_MULTIPLIER,
+    volumeRatio: parseFloat(ratio.toFixed(2)),
+    avgVolume:   avgVol,
+    lastVolume:  lastVol,
+  };
+}
+
+// ── MODULE: Higher Timeframe Trend Filter ─────────────
+
+const HTF_MAP = {
+  '15m': '1h',
+  '30m': '4h',
+  '1h':  '4h',
+  '4h':  '1d',
+};
+
+async function getHTFTrend(symbol, timeframe) {
+  try {
+    const htf = HTF_MAP[timeframe];
+    if (!htf) return { trend: 'neutral', ema20: null, ema50: null };
+
+    const candles = await getCandles(symbol, htf, 60);
+    if (!candles || candles.length < 55) return { trend: 'neutral' };
+
+    const closes = candles.map(c => c.close);
+    const ema20  = calculateEMAArray(closes, 20);
+    const ema50  = calculateEMAArray(closes, 50);
+
+    const lastEma20 = ema20[ema20.length - 1];
+    const lastEma50 = ema50[ema50.length - 1];
+    const lastClose = closes[closes.length - 1];
+
+    let trend = 'neutral';
+    if (lastClose > lastEma20 && lastEma20 > lastEma50) trend = 'bullish';
+    else if (lastClose < lastEma20 && lastEma20 < lastEma50) trend = 'bearish';
+
+    return { trend, ema20: lastEma20, ema50: lastEma50 };
+  } catch {
+    return { trend: 'neutral' };
+  }
 }
 
 // ── MODULE 4: RSI Engine ──────────────────────────────
@@ -64,11 +125,11 @@ function calculateRSI(closes, period = 14) {
 
 function getRSISignal(closes) {
   const rsiValues = [];
-  for (let i = 14; i <= closes.length; i++) {
+  for (let i = 15; i <= closes.length; i++) {
     rsiValues.push(calculateRSI(closes.slice(0, i)));
   }
 
-  const current = rsiValues[rsiValues.length - 1];
+  const current  = rsiValues[rsiValues.length - 1];
   const previous = rsiValues[rsiValues.length - 2];
   if (current === null || previous === null) return null;
 
@@ -76,26 +137,19 @@ function getRSISignal(closes) {
   if (current < 30) state = 'oversold';
   else if (current > 70) state = 'overbought';
 
-  let momentum = current > previous ? 'rising' : 'falling';
-
-  // Oversold recovery
-  const oversoldRecovery = previous < 30 && current > previous;
-  // Overbought rejection
+  const oversoldRecovery    = previous < 30 && current > previous;
   const overboughtRejection = previous > 70 && current < previous;
 
-  return { rsiValue: current, state, momentum, oversoldRecovery, overboughtRejection };
+  return {
+    rsiValue: current,
+    state,
+    momentum:             current > previous ? 'rising' : 'falling',
+    oversoldRecovery,
+    overboughtRejection,
+  };
 }
 
 // ── MODULE 5: MACD Engine ─────────────────────────────
-
-function calculateEMA(closes, period) {
-  const k = 2 / (period + 1);
-  let ema = closes[0];
-  for (let i = 1; i < closes.length; i++) {
-    ema = closes[i] * k + ema * (1 - k);
-  }
-  return ema;
-}
 
 function calculateEMAArray(closes, period) {
   const k = 2 / (period + 1);
@@ -107,35 +161,27 @@ function calculateEMAArray(closes, period) {
 }
 
 function getMACDSignal(closes) {
-  if (closes.length < 35) return null;
+  if (closes.length < 40) return null;
 
   const ema12 = calculateEMAArray(closes, 12);
   const ema26 = calculateEMAArray(closes, 26);
 
-  const macdLine = ema12.map((v, i) => v - ema26[i]);
-  const macdSlice = macdLine.slice(25); // enough for signal line
+  const macdLine  = ema12.map((v, i) => v - ema26[i]);
+  const macdSlice = macdLine.slice(25);
 
   const signalLine = calculateEMAArray(macdSlice, 9);
-  const histogram = macdSlice.map((v, i) => v - signalLine[i]);
+  const histogram  = macdSlice.map((v, i) => v - signalLine[i]);
 
   const len = histogram.length;
-  const prevMACD = macdSlice[len - 2];
-  const currMACD = macdSlice[len - 1];
+  const prevMACD   = macdSlice[len - 2];
+  const currMACD   = macdSlice[len - 1];
   const prevSignal = signalLine[len - 2];
   const currSignal = signalLine[len - 1];
-  const prevHist = histogram[len - 2];
-  const currHist = histogram[len - 1];
+  const prevHist   = histogram[len - 2];
+  const currHist   = histogram[len - 1];
 
-  // Bullish crossover: MACD crosses above Signal
   const bullishCross = prevMACD < prevSignal && currMACD > currSignal;
-  // Bearish crossover
   const bearishCross = prevMACD > prevSignal && currMACD < currSignal;
-
-  // Histogram confirmation
-  const histIncreasing = currHist > prevHist;
-  const histDecreasing = currHist < prevHist;
-  const histGreen = currHist > 0;
-  const histRed = currHist < 0;
 
   let crossover = 'none';
   if (bullishCross) crossover = 'bullish';
@@ -143,10 +189,13 @@ function getMACDSignal(closes) {
 
   return {
     crossover,
-    histBullish: histIncreasing || histGreen,
-    histBearish: histDecreasing || histRed,
-    macdValue: parseFloat(currMACD.toFixed(6)),
-    signalValue: parseFloat(currSignal.toFixed(6)),
+    histBullish:  currHist > prevHist || currHist > 0,
+    histBearish:  currHist < prevHist || currHist < 0,
+    histIncreasing: currHist > prevHist,
+    histDecreasing: currHist < prevHist,
+    macdValue:    parseFloat(currMACD.toFixed(8)),
+    signalValue:  parseFloat(currSignal.toFixed(8)),
+    histogram:    parseFloat(currHist.toFixed(8)),
   };
 }
 
@@ -179,9 +228,8 @@ function findSwingHighs(candles, lookback = 5) {
 }
 
 function clusterZones(points, threshold = 0.025) {
-  // Group nearby price levels into zones
   const zones = [];
-  const used = new Set();
+  const used  = new Set();
 
   for (let i = 0; i < points.length; i++) {
     if (used.has(i)) continue;
@@ -213,11 +261,10 @@ function getSupportResistance(candles) {
 
   const currentPrice = candles[candles.length - 1].close;
 
-  // Find nearest support below price
-  const supportsBelow = supportLevels.filter(p => p < currentPrice);
-  const resistancesAbove = resistanceLevels.filter(p => p > currentPrice);
+  const supportsBelow     = supportLevels.filter(p => p < currentPrice);
+  const resistancesAbove  = resistanceLevels.filter(p => p > currentPrice);
 
-  const nearestSupport    = supportsBelow.length ? Math.max(...supportsBelow) : null;
+  const nearestSupport    = supportsBelow.length    ? Math.max(...supportsBelow)    : null;
   const nearestResistance = resistancesAbove.length ? Math.min(...resistancesAbove) : null;
 
   return {
@@ -225,24 +272,19 @@ function getSupportResistance(candles) {
     resistanceZone:  nearestResistance !== null,
     supportPrice:    nearestSupport,
     resistancePrice: nearestResistance,
-    allSupports:     supportLevels,
-    allResistances:  resistanceLevels,
   };
 }
-
-// ── MODULE 3: Price Location Filter ──────────────────
 
 function getPriceLocation(currentPrice, sr, threshold = 0.025) {
   const { supportPrice, resistancePrice } = sr;
 
   if (supportPrice) {
-    const distSupport = Math.abs(currentPrice - supportPrice) / supportPrice;
-    if (distSupport <= threshold) return 'Support';
+    const dist = Math.abs(currentPrice - supportPrice) / supportPrice;
+    if (dist <= threshold) return 'Support';
   }
-
   if (resistancePrice) {
-    const distResistance = Math.abs(currentPrice - resistancePrice) / resistancePrice;
-    if (distResistance <= threshold) return 'Resistance';
+    const dist = Math.abs(currentPrice - resistancePrice) / resistancePrice;
+    if (dist <= threshold) return 'Resistance';
   }
 
   return 'Between';
@@ -252,20 +294,15 @@ function getPriceLocation(currentPrice, sr, threshold = 0.025) {
 
 function detectBreakout(candles, sr) {
   const { resistancePrice, supportPrice } = sr;
-  const last2 = candles.slice(-2);
-  const prev = last2[0];
-  const curr = last2[1];
+  const prev = candles[candles.length - 2];
+  const curr = candles[candles.length - 1];
 
-  // Bullish breakout: closes above resistance
   if (resistancePrice && prev.close <= resistancePrice && curr.close > resistancePrice) {
     return { breakout: true, type: 'bullish' };
   }
-
-  // Bearish breakdown: closes below support
   if (supportPrice && prev.close >= supportPrice && curr.close < supportPrice) {
     return { breakdown: true, type: 'bearish' };
   }
-
   return { breakout: false, breakdown: false };
 }
 
@@ -274,18 +311,15 @@ function detectBreakout(candles, sr) {
 function detectRetest(candles, sr) {
   const { resistancePrice, supportPrice } = sr;
   const currentPrice = candles[candles.length - 1].close;
-  const threshold = 0.012;
+  const threshold = 0.02;
 
-  // Bullish retest: was resistance, now acting as support
   if (resistancePrice) {
-    const wasAbove = candles.slice(-10, -3).some(c => c.close > resistancePrice);
+    const wasAbove  = candles.slice(-10, -3).some(c => c.close > resistancePrice);
     const nearOldRes = Math.abs(currentPrice - resistancePrice) / resistancePrice <= threshold;
     if (wasAbove && nearOldRes) return { retest: true, type: 'bullish' };
   }
-
-  // Bearish retest: was support, now acting as resistance
   if (supportPrice) {
-    const wasBelow = candles.slice(-10, -3).some(c => c.close < supportPrice);
+    const wasBelow   = candles.slice(-10, -3).some(c => c.close < supportPrice);
     const nearOldSup = Math.abs(currentPrice - supportPrice) / supportPrice <= threshold;
     if (wasBelow && nearOldSup) return { retest: true, type: 'bearish' };
   }
@@ -293,25 +327,7 @@ function detectRetest(candles, sr) {
   return { retest: false };
 }
 
-// ── MODULE 11: Signal Scoring ─────────────────────────
-
-function calculateScore(params) {
-  let score = 0;
-
-  // S/R Alignment (35 pts)
-  if (params.srAligned) score += 35;
-
-  // RSI Confirmation (25 pts)
-  if (params.rsiConfirmed) score += 25;
-
-  // MACD Confirmation (25 pts)
-  if (params.macdConfirmed) score += 25;
-
-  // Breakout / Retest (15 pts)
-  if (params.breakoutOrRetest) score += 15;
-
-  return score;
-}
+// ── MODULE 12: Grade ──────────────────────────────────
 
 function getGrade(score) {
   if (score >= 90) return 'A+';
@@ -321,45 +337,59 @@ function getGrade(score) {
   return 'F';
 }
 
-// ── MAIN: Analyze a single symbol + timeframe ─────────
+// ── MAIN: Analyze symbol + timeframe ─────────────────
 
 async function analyzeSymbol(symbol, timeframe) {
   try {
     const candles = await getCandles(symbol, timeframe);
     if (!candles || candles.length < 50) return null;
 
-    const closes = candles.map(c => c.close);
+    const closes       = candles.map(c => c.close);
     const currentPrice = closes[closes.length - 1];
 
-    // Get indicators
-    const rsi  = getRSISignal(closes);
-    const macd = getMACDSignal(closes);
-    const sr   = getSupportResistance(candles);
+    // Core indicators
+    const rsi    = getRSISignal(closes);
+    const macd   = getMACDSignal(closes);
+    const sr     = getSupportResistance(candles);
+    const volume = getVolumeSignal(candles);
 
-    if (!rsi || !macd || (!sr.supportZone && !sr.resistanceZone)) return null;
+    if (!rsi || !macd) return null;
+    if (!sr.supportZone && !sr.resistanceZone) return null;
 
     const priceLocation = getPriceLocation(currentPrice, sr);
-    if (priceLocation === 'Between') return null; // MODULE 13 rejection
+    if (priceLocation === 'Between') return null;
+
+    // Higher Timeframe Trend
+    const htf = await getHTFTrend(symbol, timeframe);
 
     const breakoutInfo = detectBreakout(candles, sr);
     const retestInfo   = detectRetest(candles, sr);
 
-    // ── MODULE 6: BUY Signal ──────────────────────────
+    // ── BUY Signal ────────────────────────────────────
     if (priceLocation === 'Support') {
-      const rsiOk  = rsi.state === 'oversold' || rsi.oversoldRecovery || rsi.rsiValue < 45;
-      const macdOk = macd.crossover === 'bullish';
-      const histOk = macd.histBullish;
+      // HTF must be bullish or neutral (not bearish)
+      if (htf.trend === 'bearish') return null;
+
+      const rsiOk   = rsi.state === 'oversold' || rsi.oversoldRecovery || rsi.rsiValue < 45;
+      const macdOk  = macd.crossover === 'bullish';
+      const histOk  = macd.histBullish;
       const srAlign = sr.supportZone;
-      const brOk   = breakoutInfo.type === 'bullish' || retestInfo.type === 'bullish';
+      const brOk    = breakoutInfo.type === 'bullish' || retestInfo.type === 'bullish';
 
-      // Partial MACD scoring — crossover=25, histogram only=15, MACD>Signal=10
-      const macdScore = macdOk && histOk ? 25 : histOk ? 15 : (macd.macdValue > macd.signalValue ? 10 : 0);
-
+      // Scoring
       let score = 0;
-      if (srAlign) score += 35;
-      if (rsiOk)   score += 25;
-      score += macdScore;
-      if (brOk)    score += 15;
+      if (srAlign)      score += 30;
+      if (rsiOk)        score += 20;
+      // MACD partial scoring
+      if (macdOk && histOk)         score += 25;
+      else if (histOk)              score += 15;
+      else if (macd.macdValue > macd.signalValue) score += 8;
+      // Volume bonus
+      if (volume.volumeOk)          score += 10;
+      // HTF bonus
+      if (htf.trend === 'bullish')  score += 10;
+      // Breakout/Retest bonus
+      if (brOk)                     score += 5;
 
       if (score < CONFIG.MIN_SCORE) return null;
 
@@ -374,31 +404,38 @@ async function analyzeSymbol(symbol, timeframe) {
         resistancePrice: sr.resistancePrice,
         rsi:             rsi.rsiValue,
         macdSignal:      macdOk ? 'Bullish Crossover' : 'Bullish',
-        breakout:        breakoutInfo.breakout || false,
-        retest:          retestInfo.retest || false,
+        breakout:        breakoutInfo.breakout  || false,
+        retest:          retestInfo.retest      || false,
         score,
         grade:           getGrade(score),
         signal:          'BUY',
         entryPrice:      currentPrice,
+        htfTrend:        htf.trend,
+        volumeRatio:     volume.volumeRatio,
         strength:        'HIGH',
       };
     }
 
-    // ── MODULE 7: SELL Signal ─────────────────────────
+    // ── SELL Signal ───────────────────────────────────
     if (priceLocation === 'Resistance') {
-      const rsiOk  = rsi.state === 'overbought' || rsi.overboughtRejection || rsi.rsiValue > 55;
-      const macdOk = macd.crossover === 'bearish';
-      const histOk = macd.histBearish;
-      const srAlign = sr.resistanceZone;
-      const brOk   = breakoutInfo.type === 'bearish' || retestInfo.type === 'bearish';
+      // HTF must be bearish or neutral
+      if (htf.trend === 'bullish') return null;
 
-      const macdScore = macdOk && histOk ? 25 : histOk ? 15 : (macd.macdValue < macd.signalValue ? 10 : 0);
+      const rsiOk   = rsi.state === 'overbought' || rsi.overboughtRejection || rsi.rsiValue > 55;
+      const macdOk  = macd.crossover === 'bearish';
+      const histOk  = macd.histBearish;
+      const srAlign = sr.resistanceZone;
+      const brOk    = breakoutInfo.type === 'bearish' || retestInfo.type === 'bearish';
 
       let score = 0;
-      if (srAlign) score += 35;
-      if (rsiOk)   score += 25;
-      score += macdScore;
-      if (brOk)    score += 15;
+      if (srAlign)      score += 30;
+      if (rsiOk)        score += 20;
+      if (macdOk && histOk)         score += 25;
+      else if (histOk)              score += 15;
+      else if (macd.macdValue < macd.signalValue) score += 8;
+      if (volume.volumeOk)          score += 10;
+      if (htf.trend === 'bearish')  score += 10;
+      if (brOk)                     score += 5;
 
       if (score < CONFIG.MIN_SCORE) return null;
 
@@ -414,25 +451,28 @@ async function analyzeSymbol(symbol, timeframe) {
         rsi:             rsi.rsiValue,
         macdSignal:      macdOk ? 'Bearish Crossover' : 'Bearish',
         breakout:        breakoutInfo.breakdown || false,
-        retest:          retestInfo.retest || false,
+        retest:          retestInfo.retest      || false,
         score,
         grade:           getGrade(score),
         signal:          'SELL',
         entryPrice:      currentPrice,
+        htfTrend:        htf.trend,
+        volumeRatio:     volume.volumeRatio,
         strength:        'HIGH',
       };
     }
 
     return null;
   } catch (err) {
-    console.warn(`analyzeSymbol failed for ${symbol}/${timeframe}:`, err.message);
+    console.warn(`analyzeSymbol failed ${symbol}/${timeframe}:`, err.message);
     return null;
   }
 }
 
-// Scan all coins across all timeframes
+// ── Full Scan ─────────────────────────────────────────
+
 async function runFullScan(onProgress) {
-  const coins = await getTopCoins(CONFIG.TOP_COINS_COUNT);
+  const coins   = await getTopCoins(CONFIG.TOP_COINS_COUNT);
   const signals = [];
   let done = 0;
   const total = coins.length * CONFIG.TIMEFRAMES.length;
@@ -443,8 +483,7 @@ async function runFullScan(onProgress) {
       if (result) signals.push(result);
       done++;
       if (onProgress) onProgress(done, total, symbol);
-      // Small delay to avoid rate limiting
-      await new Promise(r => setTimeout(r, 60));
+      await new Promise(r => setTimeout(r, 80));
     }
   }
 
