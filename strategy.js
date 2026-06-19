@@ -5,6 +5,9 @@
 async function getTopCoins(limit = CONFIG.TOP_COINS_COUNT) {
   const res = await fetch(`${CONFIG.BINANCE_API}/ticker/24hr`);
   const tickers = await res.json();
+  // Stablecoins to exclude
+  const STABLES = ['USDC', 'BUSD', 'TUSD', 'DAI', 'FDUSD', 'USDP', 'USDD', 'SUSD', 'AEUR', 'EURI'];
+
   return tickers
     .filter(t =>
       t.symbol.endsWith('USDT') &&
@@ -12,6 +15,7 @@ async function getTopCoins(limit = CONFIG.TOP_COINS_COUNT) {
       !t.symbol.includes('UP') &&
       !t.symbol.includes('BEAR') &&
       !t.symbol.includes('BULL') &&
+      !STABLES.some(s => t.symbol.startsWith(s)) &&
       parseFloat(t.quoteVolume) > 1000000 // min $1M daily volume
     )
     .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
@@ -488,4 +492,4 @@ async function runFullScan(onProgress) {
   }
 
   return signals;
-}
+         }
