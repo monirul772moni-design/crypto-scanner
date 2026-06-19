@@ -19,7 +19,7 @@ const CONFIG = {
   TIMEFRAMES: ['15m', '30m', '1h', '4h'],
 
   // Minimum score to show signal
-  MIN_SCORE: 70,
+  MIN_SCORE: 60,
 
   // Candle limit for analysis
   CANDLE_LIMIT: 100,
