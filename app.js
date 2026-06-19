@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSupabase();
   bindUI();
   await refreshDashboard();
+  initPortfolio();
   startCountdown();
 });
 
@@ -75,7 +76,8 @@ async function triggerScan() {
 
     // Save new signals to DB
     for (const sig of newSignals) {
-      await saveSignal(sig);
+      const saved = await saveSignal(sig);
+      if (saved) trackNewSignal({ ...sig, id: saved.id, signal_type: sig.signal, created_at: saved.created_at });
     }
 
     document.getElementById('lastScan').textContent = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
@@ -137,6 +139,13 @@ function renderSignals() {
   }
 
   grid.innerHTML = filtered.map(sig => createSignalCard(sig)).join('');
+  // Start live P&L tracking for each visible signal
+  filtered.forEach(sig => startPnlTracking({
+    id:          sig.id,
+    symbol:      sig.symbol,
+    entry_price: sig.entry_price,
+    signal_type: sig.signal_type,
+  }));
 }
 
 function createSignalCard(sig) {
@@ -163,10 +172,14 @@ function createSignalCard(sig) {
         </div>
       </div>
       <div class="signal-right">
-        <div class="signal-price">$${formatPrice(sig.entry_price)}</div>
+        <div class="signal-price">Entry $${formatPrice(sig.entry_price)}</div>
         <div class="signal-grade grade-${grade}">${sig.grade}</div>
         <div class="signal-score">${sig.score}/100 · ${time}</div>
       </div>
+    </div>
+    <div class="pnl-live-row" id="pnl-row-${sig.id}">
+      <span class="pnl-live-label">Live P&L</span>
+      <span class="pnl-live-price">fetching...</span>
     </div>
   `;
 }
@@ -271,4 +284,4 @@ function formatPrice(price) {
   if (price >= 1000) return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
   if (price >= 1)    return price.toFixed(4);
   return price.toFixed(6);
-}
+    }
