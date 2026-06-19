@@ -178,7 +178,7 @@ function findSwingHighs(candles, lookback = 5) {
   return highs;
 }
 
-function clusterZones(points, threshold = 0.015) {
+function clusterZones(points, threshold = 0.025) {
   // Group nearby price levels into zones
   const zones = [];
   const used = new Set();
@@ -232,7 +232,7 @@ function getSupportResistance(candles) {
 
 // ── MODULE 3: Price Location Filter ──────────────────
 
-function getPriceLocation(currentPrice, sr, threshold = 0.012) {
+function getPriceLocation(currentPrice, sr, threshold = 0.025) {
   const { supportPrice, resistancePrice } = sr;
 
   if (supportPrice) {
@@ -346,18 +346,20 @@ async function analyzeSymbol(symbol, timeframe) {
 
     // ── MODULE 6: BUY Signal ──────────────────────────
     if (priceLocation === 'Support') {
-      const rsiOk   = rsi.state === 'oversold' || rsi.oversoldRecovery;
-      const macdOk  = macd.crossover === 'bullish';
-      const histOk  = macd.histBullish;
+      const rsiOk  = rsi.state === 'oversold' || rsi.oversoldRecovery || rsi.rsiValue < 45;
+      const macdOk = macd.crossover === 'bullish';
+      const histOk = macd.histBullish;
       const srAlign = sr.supportZone;
-      const brOk    = breakoutInfo.type === 'bullish' || retestInfo.type === 'bullish';
+      const brOk   = breakoutInfo.type === 'bullish' || retestInfo.type === 'bullish';
 
-      const score = calculateScore({
-        srAligned:        srAlign,
-        rsiConfirmed:     rsiOk,
-        macdConfirmed:    macdOk && histOk,
-        breakoutOrRetest: brOk,
-      });
+      // Partial MACD scoring — crossover=25, histogram only=15, MACD>Signal=10
+      const macdScore = macdOk && histOk ? 25 : histOk ? 15 : (macd.macdValue > macd.signalValue ? 10 : 0);
+
+      let score = 0;
+      if (srAlign) score += 35;
+      if (rsiOk)   score += 25;
+      score += macdScore;
+      if (brOk)    score += 15;
 
       if (score < CONFIG.MIN_SCORE) return null;
 
@@ -371,7 +373,7 @@ async function analyzeSymbol(symbol, timeframe) {
         supportPrice:    sr.supportPrice,
         resistancePrice: sr.resistancePrice,
         rsi:             rsi.rsiValue,
-        macdSignal:      'Bullish',
+        macdSignal:      macdOk ? 'Bullish Crossover' : 'Bullish',
         breakout:        breakoutInfo.breakout || false,
         retest:          retestInfo.retest || false,
         score,
@@ -384,18 +386,19 @@ async function analyzeSymbol(symbol, timeframe) {
 
     // ── MODULE 7: SELL Signal ─────────────────────────
     if (priceLocation === 'Resistance') {
-      const rsiOk   = rsi.state === 'overbought' || rsi.overboughtRejection;
-      const macdOk  = macd.crossover === 'bearish';
-      const histOk  = macd.histBearish;
+      const rsiOk  = rsi.state === 'overbought' || rsi.overboughtRejection || rsi.rsiValue > 55;
+      const macdOk = macd.crossover === 'bearish';
+      const histOk = macd.histBearish;
       const srAlign = sr.resistanceZone;
-      const brOk    = breakoutInfo.type === 'bearish' || retestInfo.type === 'bearish';
+      const brOk   = breakoutInfo.type === 'bearish' || retestInfo.type === 'bearish';
 
-      const score = calculateScore({
-        srAligned:        srAlign,
-        rsiConfirmed:     rsiOk,
-        macdConfirmed:    macdOk && histOk,
-        breakoutOrRetest: brOk,
-      });
+      const macdScore = macdOk && histOk ? 25 : histOk ? 15 : (macd.macdValue < macd.signalValue ? 10 : 0);
+
+      let score = 0;
+      if (srAlign) score += 35;
+      if (rsiOk)   score += 25;
+      score += macdScore;
+      if (brOk)    score += 15;
 
       if (score < CONFIG.MIN_SCORE) return null;
 
@@ -409,7 +412,7 @@ async function analyzeSymbol(symbol, timeframe) {
         supportPrice:    sr.supportPrice,
         resistancePrice: sr.resistancePrice,
         rsi:             rsi.rsiValue,
-        macdSignal:      'Bearish',
+        macdSignal:      macdOk ? 'Bearish Crossover' : 'Bearish',
         breakout:        breakoutInfo.breakdown || false,
         retest:          retestInfo.retest || false,
         score,
@@ -446,4 +449,4 @@ async function runFullScan(onProgress) {
   }
 
   return signals;
-      }
+}
