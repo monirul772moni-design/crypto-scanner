@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CryptoScan Pro — Signal Scanner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">◈</span>
+        <span class="logo-text">CryptoScan <em>Pro</em></span>
+      </div>
+      <div class="strategy-badge">STRATEGY-02 · RSI+MACD+SR</div>
+    </div>
+    <div class="header-right">
+      <div class="live-indicator">
+        <span class="pulse"></span>
+        <span id="liveStatus">LIVE</span>
+      </div>
+      <div class="next-refresh">
+        Next scan in <span id="countdown">--</span>s
+      </div>
+      <button class="scan-btn" id="manualScanBtn">
+        ⟳ Scan Now
+      </button>
+    </div>
+  </header>
+
+  <!-- Stats Bar -->
+  <div class="stats-bar">
+    <div class="stat-item">
+      <span class="stat-label">Total Signals Today</span>
+      <span class="stat-value" id="totalSignals">0</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">BUY Signals</span>
+      <span class="stat-value buy" id="buyCount">0</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">SELL Signals</span>
+      <span class="stat-value sell" id="sellCount">0</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">Win Rate</span>
+      <span class="stat-value win" id="winRate">--%</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">Coins Scanned</span>
+      <span class="stat-value" id="coinsScanned">0</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-label">Last Scan</span>
+      <span class="stat-value" id="lastScan">--:--</span>
+    </div>
+  </div>
+
+  <!-- Main Layout -->
+  <main class="main">
+
+    <!-- Left: Active Signals -->
+    <section class="panel signals-panel">
+      <div class="panel-header">
+        <h2>Active Signals</h2>
+        <div class="filter-row">
+          <button class="filter-btn active" data-filter="ALL">All</button>
+          <button class="filter-btn" data-filter="BUY">BUY</button>
+          <button class="filter-btn" data-filter="SELL">SELL</button>
+          <select class="tf-select" id="tfFilter">
+            <option value="ALL">All TF</option>
+            <option value="15m">15m</option>
+            <option value="30m">30m</option>
+            <option value="1h">1h</option>
+            <option value="4h">4h</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="scanning-overlay" id="scanningOverlay">
+        <div class="scan-animation">
+          <div class="scan-line"></div>
+          <p>Scanning <span id="scanProgress">0</span> / <span id="scanTotal">200</span> coins...</p>
+        </div>
+      </div>
+
+      <div class="signals-grid" id="signalsGrid">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">◈</div>
+          <p>No signals yet. Click <strong>Scan Now</strong> to start.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right: Signal History -->
+    <section class="panel history-panel">
+      <div class="panel-header">
+        <h2>Signal History</h2>
+        <span class="history-count" id="historyCount">0 records</span>
+      </div>
+
+      <div class="history-list" id="historyList">
+        <div class="empty-state">
+          <p>History will appear here after signals are generated.</p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Performance Section -->
+  <section class="performance-section">
+    <div class="perf-header">
+      <h2>Performance Tracker</h2>
+      <p>Outcomes are checked 2 hours after each signal</p>
+    </div>
+    <div class="perf-grid" id="perfGrid">
+      <div class="perf-empty">No outcomes recorded yet.</div>
+    </div>
+  </section>
+
+  <!-- Toast Notification -->
+  <div class="toast" id="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="supabase.js"></script>
+  <script src="strategy.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
