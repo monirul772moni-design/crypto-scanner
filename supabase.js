@@ -7,8 +7,26 @@ function initSupabase() {
   return supabaseClient;
 }
 
+// Check duplicate — same signal within 1 hour
+async function isDuplicate(symbol, timeframe, signalType) {
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { data } = await supabaseClient
+    .from('signals')
+    .select('id')
+    .eq('symbol', symbol)
+    .eq('timeframe', timeframe)
+    .eq('signal_type', signalType)
+    .gte('created_at', oneHourAgo)
+    .limit(1);
+  return data && data.length > 0;
+}
+
 // Save a signal to DB
 async function saveSignal(signal) {
+  // Skip duplicate signals within 1 hour
+  const dup = await isDuplicate(signal.symbol, signal.timeframe, signal.signal);
+  if (dup) return null;
+
   const { data, error } = await supabaseClient
     .from('signals')
     .insert([{
@@ -134,4 +152,4 @@ async function getWinRate() {
   if (error || !data || data.length === 0) return null;
   const wins = data.filter(d => d.outcome === 'WIN').length;
   return Math.round((wins / data.length) * 100);
-    }
+}
