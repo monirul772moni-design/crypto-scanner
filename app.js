@@ -156,6 +156,8 @@ function createSignalCard(sig) {
           <span class="meta-tag">${sig.price_location}</span>
           <span class="meta-tag rsi">RSI ${sig.rsi_value?.toFixed(1) ?? '--'}</span>
           <span class="meta-tag macd">MACD ${sig.macd_signal}</span>
+          ${sig.htf_trend ? `<span class="meta-tag htf htf-${sig.htf_trend}">HTF ${sig.htf_trend?.toUpperCase()}</span>` : ''}
+          ${sig.volume_ratio ? `<span class="meta-tag vol">VOL ${sig.volume_ratio}x</span>` : ''}
           ${sig.breakout ? '<span class="meta-tag">BREAKOUT</span>' : ''}
           ${sig.retest  ? '<span class="meta-tag">RETEST</span>'   : ''}
         </div>
@@ -269,4 +271,4 @@ function formatPrice(price) {
   if (price >= 1000) return price.toLocaleString('en-US', { maximumFractionDigits: 2 });
   if (price >= 1)    return price.toFixed(4);
   return price.toFixed(6);
-                                                         }
+}
